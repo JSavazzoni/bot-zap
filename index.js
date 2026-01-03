@@ -1,40 +1,43 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const { Sticker, StickerTypes } = require('wa-sticker-formatter');
 const mongoose = require('mongoose');
 const express = require('express');
 const pino = require('pino');
 const QRCode = require('qrcode');
-const fs = require('fs');
 
 // ===========================================================
 // ⚙️ CONFIGURAÇÕES
 // ===========================================================
 
+// ⚠️ CONFIRA SE SUA URL ESTÁ CERTA (SEM ESPAÇOS)
 const MONGO_URI = 'mongodb+srv://admin_julio:IS0DKctykYcCdx3Q@bot-zap.8dxhxws.mongodb.net/?appName=bot-zap';
 const GRUPO_PERMITIDO = '120363406055326989@g.us'; 
 
 // ===========================================================
-// 💾 SISTEMA DE SALVAMENTO NO MONGODB (ADAPTADOR CUSTOMIZADO)
+// 💾 SISTEMA DE SALVAMENTO NO MONGODB (CORRIGIDO)
 // ===========================================================
-// Cria um esquema simples para guardar a sessão
 const SessionSchema = new mongoose.Schema({ _id: String, data: Object });
 const Session = mongoose.model('BaileysSession', SessionSchema);
 
 const useMongoDBAuthState = async () => {
-    // Carrega ou cria credenciais
     const writeData = async (data, id) => {
-        await Session.findByIdAndUpdate(id, { _id: id, data }, { upsert: true });
+        try {
+            await Session.findByIdAndUpdate(id, { _id: id, data }, { upsert: true });
+        } catch(err) { console.error('Erro ao salvar sessão:', err); }
     };
     const readData = async (id) => {
-        const res = await Session.findById(id);
-        return res ? res.data : null;
+        try {
+            const res = await Session.findById(id);
+            return res ? res.data : null;
+        } catch(err) { return null; }
     };
     const removeData = async (id) => {
-        await Session.findByIdAndDelete(id);
+        try { await Session.findByIdAndDelete(id); } catch(err) {}
     };
 
-    // Lógica para simular sistema de arquivos no Banco
-    const creds = await readData('creds') || (await useMultiFileAuthState('./temp_auth')).state.creds;
+    // Gera credenciais iniciais vazias se não existirem no banco
+    const { state: startState } = await useMultiFileAuthState('./temp_auth_init'); 
+    const creds = await readData('creds') || startState.creds;
 
     return {
         state: {
@@ -44,7 +47,7 @@ const useMongoDBAuthState = async () => {
                     const data = {};
                     await Promise.all(ids.map(async (id) => {
                         let value = await readData(`${type}-${id}`);
-                        if(type === 'app-state-sync-key' && value) { value = value.proto; } // Fix para chaves
+                        if(type === 'app-state-sync-key' && value) { value = value.proto; }
                         if(value) data[id] = value;
                     }));
                     return data;
@@ -66,19 +69,17 @@ const useMongoDBAuthState = async () => {
 };
 
 // ===========================================================
-// 🌐 SITE (VISUAL MODERNO E LIMPO)
+// 🌐 SITE VISUAL
 // ===========================================================
 const app = express();
 const port = process.env.PORT || 3000;
 
 let qrRaw = null;
-let statusBot = 'Iniciando Sistema Leve...';
+let statusBot = 'Iniciando...';
 let isConnected = false;
 
 app.get('/', (req, res) => {
-    // Evita cache para atualizar o QR code sempre
     res.set('Cache-Control', 'no-store');
-    
     const html = `
     <!DOCTYPE html>
     <html lang="pt-br">
@@ -86,46 +87,30 @@ app.get('/', (req, res) => {
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <meta http-equiv="refresh" content="3">
-        <title>Bot Baileys Ultra</title>
+        <title>Bot Baileys</title>
         <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
         <style>
-            body { background: #0f172a; color: #f8fafc; font-family: 'Inter', sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-            .card { background: #1e293b; padding: 2rem; border-radius: 16px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5); text-align: center; width: 350px; border: 1px solid #334155; }
-            h1 { color: #38bdf8; margin: 0 0 1rem 0; font-size: 1.5rem; }
-            .status-box { background: #334155; padding: 0.5rem; border-radius: 8px; margin-top: 1rem; font-size: 0.9rem; font-weight: 500; }
-            .online { color: #4ade80; } .wait { color: #fbbf24; }
-            #qrcode { background: white; padding: 10px; border-radius: 8px; margin: 1.5rem auto; width: fit-content; display: none; }
-            .pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
-            @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+            body { background: #0f172a; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+            .box { background: #1e293b; padding: 2rem; border-radius: 10px; text-align: center; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+            h1 { color: #38bdf8; }
+            #qrcode { background: white; padding: 10px; margin: 20px auto; width: fit-content; border-radius: 5px; display: none; }
         </style>
     </head>
     <body>
-        <div class="card">
-            <h1>🚀 Bot Ultra Rápido</h1>
-            <p style="color: #94a3b8; font-size: 0.9rem;">Tecnologia Baileys (Sem Chrome)</p>
-            
+        <div class="box">
+            <h1>🤖 Bot Sticker</h1>
             <div id="qrcode"></div>
-            
-            <div id="loader" style="margin: 20px 0; font-size: 2rem;">
-                ${isConnected ? '✅' : '⏳'}
-            </div>
-
-            <div class="status-box">
-                Status: <span class="${isConnected ? 'online' : 'wait'}">${isConnected ? 'SISTEMA ONLINE' : statusBot}</span>
-            </div>
+            <h3>Status: <span style="color:${isConnected ? '#4ade80' : '#fbbf24'}">${isConnected ? 'ONLINE 🚀' : statusBot}</span></h3>
+            ${isConnected ? '<p>Sistema rodando liso.</p>' : '<p>Aguarde o QR Code...</p>'}
         </div>
-
         <script>
             const raw = "${qrRaw || ''}";
             const connected = ${isConnected};
-            
             if (!connected && raw.length > 10) {
-                document.getElementById('qrcode').style.display = 'block';
-                document.getElementById('loader').style.display = 'none';
-                document.getElementById('qrcode').innerHTML = "";
-                new QRCode(document.getElementById("qrcode"), { text: raw, width: 180, height: 180 });
-            } else if (connected) {
-                document.getElementById('qrcode').style.display = 'none';
+                const qrDiv = document.getElementById('qrcode');
+                qrDiv.style.display = 'block';
+                qrDiv.innerHTML = "";
+                new QRCode(qrDiv, { text: raw, width: 200, height: 200 });
             }
         </script>
     </body>
@@ -133,32 +118,46 @@ app.get('/', (req, res) => {
     res.send(html);
 });
 
-app.listen(port, () => console.log(`🌍 Site rodando na porta ${port}`));
+app.listen(port, () => console.log(`🌍 Site na porta ${port}`));
 
 // ===========================================================
-// 🧠 LÓGICA DO ROBÔ (BAILEYS)
+// 🧠 LÓGICA DO ROBÔ
 // ===========================================================
 
 const startBot = async () => {
-    console.log('🍃 Conectando ao MongoDB...');
-    await mongoose.connect(MONGO_URI);
-    console.log('🍃 MongoDB Conectado! Carregando sessão...');
+    console.log('🍃 Conectando ao Banco de Dados...');
+    try {
+        await mongoose.connect(MONGO_URI);
+        console.log('🍃 MongoDB Conectado.');
+    } catch (err) {
+        console.error('❌ Erro Fatal no Mongo:', err);
+        return;
+    }
+
+    // Busca a versão mais recente do WhatsApp para evitar conflitos
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    console.log(`📡 Usando WhatsApp versão v${version.join('.')}, é a mais recente? ${isLatest}`);
 
     const { state, saveCreds } = await useMongoDBAuthState();
 
     const sock = makeWASocket({
+        version, // Usa a versão correta
         auth: state,
-        printQRInTerminal: true, // Imprime no terminal também como backup
-        logger: pino({ level: 'silent' }), // Log silencioso para economizar CPU
-        browser: ["Bot Baileys", "Chrome", "1.0.0"] // Nome que aparece no Zap
+        printQRInTerminal: false, // REMOVIDO O AVISO CHATO
+        logger: pino({ level: 'silent' }),
+        browser: ["Bot Sticker", "Chrome", "10.0"], // Browser fixo
+        connectTimeoutMs: 60000, // Aumenta tempo de tolerância
+        defaultQueryTimeoutMs: 0,
+        keepAliveIntervalMs: 10000,
+        emitOwnEvents: true,
+        retryRequestDelayMs: 250
     });
 
-    // Monitora a conexão
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
         
         if (qr) {
-            console.log('⚡ QR Code Recebido');
+            console.log('⚡ QR Code NOVO gerado (Abra o site)');
             qrRaw = qr;
             statusBot = 'Escaneie o QR Code!';
             isConnected = false;
@@ -166,61 +165,68 @@ const startBot = async () => {
 
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('❌ Conexão caiu. Reconectando...', shouldReconnect);
+            console.log(`❌ Conexão caiu. Reconectando? ${shouldReconnect}`);
+            
+            // Se foi desconectado (logoff), limpa as credenciais do banco
+            if (!shouldReconnect) {
+                console.log('🚫 Sessão encerrada. Limpando banco para novo login...');
+                mongoose.connection.db.dropCollection('baileyssessions').catch(() => {});
+            }
+
+            qrRaw = null;
             isConnected = false;
             statusBot = 'Reconectando...';
-            if (shouldReconnect) startBot();
+            
+            if (shouldReconnect) {
+                setTimeout(startBot, 3000); // Espera 3 seg e tenta de novo
+            }
         } else if (connection === 'open') {
-            console.log('✅ CONECTADO COM SUCESSO!');
+            console.log('✅ CONECTADO! Bot pronto para uso.');
             qrRaw = null;
             isConnected = true;
             statusBot = 'Online';
         }
     });
 
-    // Salva as credenciais sempre que mudar
     sock.ev.on('creds.update', saveCreds);
 
-    // Lógica das Mensagens
     sock.ev.on('messages.upsert', async ({ messages }) => {
         const msg = messages[0];
-        if (!msg.message || msg.key.fromMe) return; // Ignora msg própria ou vazia
+        if (!msg.message || msg.key.fromMe) return;
 
-        // Verifica se é o grupo certo
         const remoteJid = msg.key.remoteJid;
         if (remoteJid !== GRUPO_PERMITIDO) return;
 
-        // Detecta Imagem
-        const isImage = msg.message.imageMessage;
+        // Suporte a Imagem (imageMessage) e Imagem como Documento (viewOnce)
+        const isImage = msg.message.imageMessage || 
+                        msg.message.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ||
+                        msg.message.viewOnceMessageV2?.message?.imageMessage;
         
         if (isImage) {
-            // Reação imediata (Rápido)
             await sock.sendMessage(remoteJid, { react: { text: "⏳", key: msg.key } });
-
             try {
-                // Baixa a imagem (Buffer)
-                const buffer = await downloadMediaMessage(msg, 'buffer', {});
+                // Pega o objeto correto da imagem
+                const imageKey = msg.message.imageMessage ? msg : 
+                               (msg.message.viewOnceMessageV2 ? msg.message.viewOnceMessageV2 : msg);
 
-                // Cria figurinha (Sem ffmpeg pesado, usa sharp nativo)
+                const buffer = await downloadMediaMessage(imageKey, 'buffer', {});
+
                 const sticker = new Sticker(buffer, {
                     pack: '.',
                     author: '.',
-                    type: StickerTypes.FULL, // Sticker completo (sem corte)
-                    quality: 50 // Qualidade média para ser rápido
+                    type: StickerTypes.FULL,
+                    quality: 60
                 });
 
-                // Envia
                 await sock.sendMessage(remoteJid, await sticker.toMessage(), { quoted: msg });
                 await sock.sendMessage(remoteJid, { react: { text: "✅", key: msg.key } });
-                console.log('Sticker enviado!');
-
+                console.log('📸 Figurinha criada!');
             } catch (e) {
-                console.error('Erro sticker:', e);
+                console.error('Erro ao criar:', e);
                 await sock.sendMessage(remoteJid, { react: { text: "❌", key: msg.key } });
             }
         }
     });
 };
 
-// Inicia tudo
-startBot().catch(err => console.error('Erro fatal:', err));
+startBot();
