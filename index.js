@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, makeCacheableSignalKeyStore, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, makeCacheableSignalKeyStore } = require('@whiskeysockets/baileys');
 const { Sticker, StickerTypes } = require('wa-sticker-formatter');
 const mongoose = require('mongoose');
 const express = require('express');
@@ -13,7 +13,7 @@ const MONGO_URI = 'mongodb+srv://admin_julio:IS0DKctykYcCdx3Q@bot-zap.8dxhxws.mo
 const GRUPO_PERMITIDO = '120363406055326989@g.us'; 
 
 // ===========================================================
-// 💾 SISTEMA DE BANCO DE DADOS (SIMPLIFICADO)
+// 💾 SISTEMA DE BANCO DE DADOS (CACHEADO)
 // ===========================================================
 const SessionSchema = new mongoose.Schema({ _id: String, data: Object });
 const Session = mongoose.model('BaileysSession', SessionSchema);
@@ -72,21 +72,23 @@ app.get('/', (req, res) => {
     const html = `
     <!DOCTYPE html><html><head><meta charset="UTF-8"><meta http-equiv="refresh" content="3"><title>Bot Sticker</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-    <style>body{background:#111;color:#fff;font-family:sans-serif;text-align:center;display:flex;justify-content:center;align-items:center;height:100vh}
-    .box{background:#222;padding:20px;border-radius:10px;border:1px solid #444}
-    #qrcode{background:#fff;padding:10px;margin:15px auto;width:fit-content;display:none}</style></head><body>
-    <div class="box"><h1>🤖 Bot Sticker</h1><div id="qrcode"></div>
-    <h3>Status: <span style="color:${isConnected?'#0f0':'#f1c40f'}">${isConnected?'ONLINE ✅':statusBot}</span></h3></div>
+    <style>body{background:#0d1117;color:#c9d1d9;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh}
+    .box{background:#161b22;padding:2rem;border-radius:12px;border:1px solid #30363d;text-align:center;width:300px}
+    #qrcode{background:#fff;padding:10px;margin:20px auto;border-radius:8px;width:fit-content;display:none}
+    .st{font-weight:bold;padding:4px 8px;border-radius:4px}</style></head><body>
+    <div class="box"><h2>🤖 Bot Sticker</h2><div id="qrcode"></div>
+    <p>Status: <span class="st" style="background:${isConnected?'#238636':'#9e6a03'}">${isConnected?'ONLINE':'Aguardando...'}</span></p>
+    <p style="font-size:12px;color:#8b949e">${statusBot}</p></div>
     <script>
-    const raw="${qrRaw||''}",conn=${isConnected};
-    if(!conn && raw.length>10){const d=document.getElementById('qrcode');d.style.display='block';d.innerHTML="";new QRCode(d,{text:raw,width:200,height:200})}
+    const r="${qrRaw||''}",c=${isConnected};
+    if(!c && r.length>10){const q=document.getElementById('qrcode');q.style.display='block';q.innerHTML="";new QRCode(q,{text:r,width:180,height:180})}
     </script></body></html>`;
     res.send(html);
 });
 app.listen(port, () => console.log(`🌍 Site na porta ${port}`));
 
 // ===========================================================
-// 🧠 LÓGICA DO ROBÔ
+// 🧠 LÓGICA DO ROBÔ (SAFE MODE)
 // ===========================================================
 const msgRetryCounterCache = new NodeCache();
 
@@ -95,15 +97,10 @@ const startBot = async () => {
     try { await mongoose.connect(MONGO_URI); console.log('🍃 Mongo OK.'); } 
     catch (err) { console.error('❌ Erro Mongo:', err); return; }
 
-    // 1. VOLTAMOS A BUSCAR A VERSÃO REAL (Isso corrige o Erro 405)
-    console.log('📡 Buscando versão do WhatsApp...');
-    const { version } = await fetchLatestBaileysVersion();
-    console.log(`📡 Versão encontrada: v${version.join('.')}`);
-
     const { state, saveCreds } = await useMongoDBAuthState();
 
     const sock = makeWASocket({
-        version, 
+        // REMOVIDO: fetchLatestBaileysVersion (Usa a interna para estabilidade)
         auth: {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
@@ -111,12 +108,18 @@ const startBot = async () => {
         printQRInTerminal: false,
         logger: pino({ level: 'fatal' }),
         
-        // 2. CONFIGURAÇÕES OTIMIZADAS
-        browser: ["Bot Sticker", "Chrome", "10.0"],
-        syncFullHistory: false, // <--- O SALVADOR DA PÁTRIA (Evita crash de memória)
+        // --- CONFIGURAÇÕES SAFE MODE ---
+        browser: ["Ubuntu", "Chrome", "20.0.04"], // Identidade Linux (Mais estável que Chrome Desktop)
+        syncFullHistory: false, // OBRIGATÓRIO: Não baixa conversas antigas
+        markOnlineOnConnect: false, // Não avisa que está online (Economiza dados)
+        generateHighQualityLinkPreview: false,
         
+        // Tolerância Extrema a Falhas
         connectTimeoutMs: 60000, 
-        keepAliveIntervalMs: 10000,
+        defaultQueryTimeoutMs: 1000000,
+        keepAliveIntervalMs: 30000, // Aumentado para reduzir ping-pong
+        retryRequestDelayMs: 5000, // Espera 5s antes de tentar de novo
+        
         msgRetryCounterCache, 
         getMessage: async () => { return { conversation: 'Oie' }; }
     });
@@ -125,38 +128,38 @@ const startBot = async () => {
         const { connection, lastDisconnect, qr } = update;
         
         if (qr) {
-            console.log('⚡ QR Code NOVO (Vá para o site!)');
+            console.log('⚡ QR Code NOVO. Abra o site!');
             qrRaw = qr;
-            statusBot = 'Escaneie o QR Code!';
+            statusBot = 'Escaneie o QR agora';
             isConnected = false;
         }
 
         if (connection === 'close') {
             const reason = (lastDisconnect?.error)?.output?.statusCode;
+            // Se undefined, é erro de rede/Render. Forçamos reconexão.
             const shouldReconnect = reason !== DisconnectReason.loggedOut;
             
-            console.log(`❌ Caiu. Razão: ${reason}. Reconectar? ${shouldReconnect}`);
+            console.log(`❌ Caiu (Razão: ${reason || 'Desconhecida'}).`);
 
-            // Se for 401 (Logout) ou 403 (Proibido), limpa tudo
             if (reason === 401 || reason === 403) {
-                console.log('🚫 Sessão inválida. Limpando banco...');
+                console.log('🚫 Sessão inválida. Limpando...');
                 await mongoose.connection.db.dropCollection('baileyssessions').catch(()=>{});
                 sock.logout();
             }
 
             qrRaw = null;
             isConnected = false;
-            statusBot = 'Reconectando...';
+            statusBot = 'Reconectando em 10s...';
             
             if (shouldReconnect) {
-                // Tenta reconectar imediatamente
-                startBot();
+                // ESPERA 10 SEGUNDOS (Backoff para o Render não bloquear)
+                setTimeout(startBot, 10000);
             }
         } else if (connection === 'open') {
-            console.log('✅ CONECTADO! Histórico antigo ignorado.');
+            console.log('✅ CONECTADO E ESTÁVEL!');
             qrRaw = null;
             isConnected = true;
-            statusBot = 'Online';
+            statusBot = 'Sistema Online';
         }
     });
 
@@ -174,17 +177,20 @@ const startBot = async () => {
                         msg.message.viewOnceMessageV2?.message?.imageMessage;
         
         if (isImage) {
+            // Reação silenciosa (sem log se falhar)
             try { await sock.sendMessage(remoteJid, { react: { text: "⏳", key: msg.key } }); } catch(e){}
 
             try {
                 const imageKey = msg.message.imageMessage ? msg : (msg.message.viewOnceMessageV2 ? msg.message.viewOnceMessageV2 : msg);
                 const buffer = await downloadMediaMessage(imageKey, 'buffer', {});
-                const sticker = new Sticker(buffer, { pack: '.', author: '.', type: StickerTypes.FULL, quality: 50 });
+                // Qualidade 40 para garantir que nunca falhe por memória
+                const sticker = new Sticker(buffer, { pack: '.', author: '.', type: StickerTypes.FULL, quality: 40 });
 
                 await sock.sendMessage(remoteJid, await sticker.toMessage(), { quoted: msg });
                 await sock.sendMessage(remoteJid, { react: { text: "✅", key: msg.key } });
             } catch (e) {
-                console.error('Erro:', e.message);
+                console.error('Erro ao fazer sticker:', e.message);
+                try { await sock.sendMessage(remoteJid, { react: { text: "❌", key: msg.key } }); } catch(e){}
             }
         }
     });
