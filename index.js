@@ -9,7 +9,7 @@ const express = require('express');
 // ===========================================================
 
 // 1. URL DO MONGODB (Substitua pela sua URL real)
-const MONGO_URI = 'mongodb+srv://julio:minhasenha123@cluster0.5x8zq.mongodb.net/?retryWrites=true&w=majority';
+const MONGO_URI = 'mongodb+srv://admin_julio:IS0DKctykYcCdx3Q@bot-zap.8dxhxws.mongodb.net/?appName=bot-zap';
 
 // 2. ID DO SEU GRUPO
 const GRUPO_PERMITIDO = '120363406055326989@g.us'; 
