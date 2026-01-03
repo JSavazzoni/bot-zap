@@ -7,34 +7,33 @@ const NodeCache = require('node-cache');
 const QRCode = require('qrcode');
 
 // ===========================================================
-// 🚨 SISTEMA ANTI-CRASH (O AIRBAG)
+// 🚨 SISTEMA ANTI-CRASH (SEGURANÇA TOTAL)
 // ===========================================================
-// Isso impede que o erro de criptografia derrube o site
 process.on('uncaughtException', async (err) => {
-    console.error('🔥 Erro Crítico Capturado:', err.message);
+    console.error('🔥 Erro Crítico:', err.message);
     if (err.message.includes('Unsupported state') || err.message.includes('authenticate data')) {
-        console.log('☢️ SESSÃO CORROMPIDA DETECTADA! RESETANDO BANCO...');
+        console.log('☢️ SESSÃO CORROMPIDA! LIMPANDO AUTOMATICAMENTE...');
         try {
             if (mongoose.connection.readyState === 1) {
                 await mongoose.connection.db.dropCollection('baileyssessions');
-                console.log('✅ Banco limpo. O Bot vai reiniciar limpo em 5s.');
             }
-        } catch (e) { console.log('Erro ao limpar:', e); }
+        } catch (e) {}
     }
 });
 
 process.on('unhandledRejection', (reason) => {
-    console.error('⚠️ Rejeição não tratada:', reason);
+    console.error('⚠️ Rejeição Silenciosa:', reason);
 });
 
 // ===========================================================
 // ⚙️ CONFIGURAÇÕES
 // ===========================================================
 const MONGO_URI = 'mongodb+srv://admin_julio:IS0DKctykYcCdx3Q@bot-zap.8dxhxws.mongodb.net/?appName=bot-zap';
+// Se quiser liberar para todos, deixe o GRUPO_PERMITIDO comentado ou vazio
 const GRUPO_PERMITIDO = '120363406055326989@g.us'; 
 
 // ===========================================================
-// 💾 SISTEMA DE BANCO DE DADOS
+// 💾 SISTEMA DE BANCO (BufferJSON)
 // ===========================================================
 const SessionSchema = new mongoose.Schema({ _id: String, data: String });
 const Session = mongoose.model('BaileysSession', SessionSchema);
@@ -107,7 +106,7 @@ app.get('/', (req, res) => {
     .box{background:#222;padding:2rem;border-radius:10px;text-align:center}
     #qrcode{background:#fff;padding:10px;margin:20px auto;border-radius:8px;width:fit-content;display:none}
     </style></head><body>
-    <div class="box"><h2>🤖 Bot Blindado</h2><div id="qrcode"></div>
+    <div class="box"><h2>🤖 Bot com Reação</h2><div id="qrcode"></div>
     <p>Status: <span style="color:${isConnected?'#4ade80':'#fbbf24'}">${isConnected?'ONLINE 🟢':'Aguardando...'}</span></p>
     <p style="font-size:12px;opacity:0.6">${statusBot}</p></div>
     <script>
@@ -133,14 +132,10 @@ const startBot = async () => {
         auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })) },
         printQRInTerminal: false,
         logger: pino({ level: 'fatal' }),
-        
-        // MUDAMOS PARA UBUNTU PARA MAIOR ESTABILIDADE
         browser: ["Ubuntu", "Chrome", "20.0.04"],
-        
         syncFullHistory: false,
         markOnlineOnConnect: false,
         generateHighQualityLinkPreview: false,
-        
         connectTimeoutMs: 60000, 
         retryRequestDelayMs: 5000,
         msgRetryCounterCache, 
@@ -162,20 +157,16 @@ const startBot = async () => {
             
             console.log(`❌ Caiu. Código: ${reason}`);
 
-            // === AQUI ESTÁ A CORREÇÃO DO 440 E 401 ===
-            // Se for Logout (401), Ban (403) ou Substituído (440) -> LIMPA TUDO
             if (reason === 401 || reason === 403 || reason === 440) {
-                console.log('☢️ Sessão inválida ou substituída. Limpando banco...');
+                console.log('☢️ Limpando sessão inválida...');
                 await mongoose.connection.db.dropCollection('baileyssessions').catch(()=>{});
             }
 
             qrRaw = null; isConnected = false; statusBot = `Reconectando...`;
-            
-            if (shouldReconnect) {
-                setTimeout(startBot, 5000);
-            }
+            if (shouldReconnect) setTimeout(startBot, 5000);
+
         } else if (connection === 'open') {
-            console.log('✅ Bot Conectado!');
+            console.log('✅ Bot Online e Pronto.');
             qrRaw = null; isConnected = true; statusBot = 'Sistema Online';
         }
     });
@@ -188,8 +179,8 @@ const startBot = async () => {
 
         const remoteJid = msg.key.remoteJid;
         
-        // Se quiser responder apenas no grupo específico, descomente a linha abaixo:
-        // if (remoteJid !== GRUPO_PERMITIDO) return;
+        // Se quiser bloquear grupos estranhos, descomente:
+        // if (GRUPO_PERMITIDO && remoteJid !== GRUPO_PERMITIDO) return;
 
         const isImage = msg.message.imageMessage || 
                         msg.message.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ||
@@ -197,14 +188,32 @@ const startBot = async () => {
         
         if (isImage) {
             try {
-                // await sock.sendMessage(remoteJid, { react: { text: "⏳", key: msg.key } }); // Comentado pra evitar conflito
+                // 1. REAÇÃO DE "CARREGANDO" (⏳)
+                // Coloquei num try/catch separado para que, se a reação falhar, 
+                // ele continue tentando fazer a figurinha mesmo assim.
+                try { 
+                    await sock.sendMessage(remoteJid, { react: { text: "⏳", key: msg.key } }); 
+                } catch(e) {}
+
                 const imageKey = msg.message.imageMessage ? msg : (msg.message.viewOnceMessageV2 ? msg.message.viewOnceMessageV2 : msg);
                 const buffer = await downloadMediaMessage(imageKey, 'buffer', {});
-                const sticker = new Sticker(buffer, { pack: '.', author: '.', type: StickerTypes.FULL, quality: 50 });
+                const sticker = new Sticker(buffer, { pack: '.', author: '.', type: StickerTypes.FULL, quality: 40 });
+
                 await sock.sendMessage(remoteJid, await sticker.toMessage(), { quoted: msg });
+                
+                // 2. REAÇÃO DE "SUCESSO" (✅)
+                try {
+                    await sock.sendMessage(remoteJid, { react: { text: "✅", key: msg.key } });
+                } catch(e) {}
+
                 console.log('✅ Sticker enviado.');
+                
             } catch (e) {
-                console.log('Erro ao enviar (Silencioso)');
+                console.log('Erro ao processar imagem:', e.message);
+                // 3. REAÇÃO DE "ERRO" (❌)
+                try {
+                    await sock.sendMessage(remoteJid, { react: { text: "❌", key: msg.key } });
+                } catch(e) {}
             }
         }
     });
