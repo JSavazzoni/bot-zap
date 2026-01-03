@@ -1,79 +1,136 @@
 const { Client, RemoteAuth } = require('whatsapp-web.js');
 const { MongoStore } = require('wwebjs-mongo');
 const mongoose = require('mongoose');
-const qrcode = require('qrcode-terminal');
+const qrcodeTerminal = require('qrcode-terminal'); // Mantivemos pro log (backup)
+const QRCode = require('qrcode'); // Nova lib para imagem no site
 const express = require('express');
 
 // ===========================================================
 // CONFIGURAÇÕES
 // ===========================================================
 
-// 1. COLOQUE AQUI SUA URL DO MONGODB (Aquela que você copiou do site)
-const MONGO_URI = 'mongodb+srv://admin_julio:IS0DKctykYcCdx3Q@bot-zap.8dxhxws.mongodb.net/?appName=bot-zap';
+// 1. URL DO MONGODB
+const MONGO_URI = 'mongodb+srv://SEU_USUARIO:SUA_SENHA@cluster....mongodb.net/?retryWrites=true&w=majority';
 
 // 2. ID DO SEU GRUPO
 const GRUPO_PERMITIDO = '120363406055326989@g.us'; 
 
+// Variáveis de Estado (Para controlar o que aparece no site)
+let qrCodeImage = null; // Vai guardar a imagem do QR
+let statusMessage = 'Iniciando o Bot... Aguarde.';
+let isConnected = false;
+
 // ===========================================================
-// SERVIDOR WEB (Para manter o Render acordado)
+// SERVIDOR WEB (Com visualizador de QR Code)
 // ===========================================================
 const app = express();
 const port = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-    res.send('🤖 Bot Profissional com MongoDB está Online!');
+    // HTML Básico com estilo simples
+    const htmlStart = `
+        <html>
+        <head>
+            <meta http-equiv="refresh" content="5"> <style>
+                body { font-family: Arial, sans-serif; text-align: center; padding: 50px; background-color: #f0f2f5; }
+                .card { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); display: inline-block; }
+                h1 { color: #075e54; }
+                p { font-size: 18px; color: #555; }
+                .status { font-weight: bold; color: #d32f2f; }
+                .online { color: #2e7d32; }
+            </style>
+        </head>
+        <body>
+            <div class="card">
+    `;
+
+    const htmlEnd = `
+            </div>
+        </body>
+        </html>
+    `;
+
+    // 1. Se estiver conectado
+    if (isConnected) {
+        res.send(`${htmlStart}
+            <h1 class="online">✅ Bot Online!</h1>
+            <p>O sistema está rodando 100%.</p>
+            <p>Conectado ao MongoDB.</p>
+            ${htmlEnd}`);
+    } 
+    // 2. Se tiver QR Code para mostrar
+    else if (qrCodeImage) {
+        res.send(`${htmlStart}
+            <h1>Conectar WhatsApp</h1>
+            <p>Escaneie o QR Code abaixo para iniciar:</p>
+            <img src="${qrCodeImage}" alt="QR Code" width="300" height="300">
+            <p class="status">Atualizando a cada 5 segundos...</p>
+            ${htmlEnd}`);
+    } 
+    // 3. Se estiver carregando
+    else {
+        res.send(`${htmlStart}
+            <h1>⏳ Carregando...</h1>
+            <p>${statusMessage}</p>
+            ${htmlEnd}`);
+    }
 });
 
 app.listen(port, () => {
-    console.log(`🌍 Servidor Web rodando na porta ${port}`);
+    console.log(`🌍 Site rodando na porta ${port}`);
 });
 
 // ===========================================================
-// CONEXÃO COM O BANCO E INÍCIO DO BOT
+// LÓGICA DO WHATSAPP
 // ===========================================================
 
 console.log('⏳ Conectando ao MongoDB...');
 
 mongoose.connect(MONGO_URI).then(() => {
-    console.log('🍃 MongoDB Conectado! Iniciando Store...');
+    console.log('🍃 MongoDB Conectado!');
     
     const store = new MongoStore({ mongoose: mongoose });
     
     const client = new Client({
         authStrategy: new RemoteAuth({
             store: store,
-            backupSyncIntervalMs: 300000 // Salva o backup da sessão a cada 5 min
+            backupSyncIntervalMs: 300000
         }),
         puppeteer: { 
             args: ['--no-sandbox', '--disable-setuid-sandbox'],
         }
     });
 
-    // --- GERAÇÃO DO QR CODE ---
-    client.on('qr', (qr) => {
-        console.log('\n================================================================');
-        console.log('⚠️ SE O QR CODE ABAIXO ESTIVER DEFORMADO:');
-        console.log('1. Copie o código longo abaixo (que começa com números e letras)');
-        console.log('2. Vá no site: https://www.the-qrcode-generator.com/');
-        console.log('3. Cole o código lá e escaneie a imagem que aparecer no site.');
-        console.log('================================================================\n');
+    // --- AO RECEBER O QR CODE ---
+    client.on('qr', async (qr) => {
+        console.log('QR Code recebido! Gerando imagem...');
+        statusMessage = 'Aguardando leitura do QR Code...';
         
-        console.log('>>> CÓDIGO RAW (Copie isto se precisar):');
-        console.log(qr); 
-        console.log('\n================================================================\n');
+        // Gera a imagem para o site
+        qrCodeImage = await QRCode.toDataURL(qr);
         
-        // Tenta desenhar no terminal também
-        qrcode.generate(qr, { small: true });
+        // Mantém o log no terminal também (segurança)
+        qrcodeTerminal.generate(qr, { small: true });
     });
 
-    client.on('remote_session_saved', () => {
-        console.log('💾 Sessão salva no Banco de Dados com sucesso!');
+    client.on('loading_screen', (percent, message) => {
+        statusMessage = `Carregando WhatsApp: ${percent}%`;
+        qrCodeImage = null; // Limpa o QR se estiver carregando
+    });
+
+    client.on('authenticated', () => {
+        statusMessage = 'Autenticado! Entrando...';
+        qrCodeImage = null;
     });
 
     client.on('ready', () => {
-        console.log('✅ Tudo pronto! O Bot está 100% carregado e salvo.');
+        console.log('✅ Bot pronto!');
+        isConnected = true;
+        qrCodeImage = null;
+        statusMessage = 'Online';
     });
 
+    // --- FUNÇÃO DE FIGURINHAS ---
     client.on('message_create', async (msg) => {
         if (msg.fromMe && msg.to === GRUPO_PERMITIDO && msg.hasMedia && msg.type === 'image') {
             try {
@@ -84,7 +141,6 @@ mongoose.connect(MONGO_URI).then(() => {
                         stickerName: "Bot Profissional",
                         stickerAuthor: "MongoDB"
                     });
-                    console.log('✅ Figurinha criada e enviada.');
                 }
             } catch (error) {
                 console.error('❌ Erro:', error);
@@ -95,5 +151,5 @@ mongoose.connect(MONGO_URI).then(() => {
     client.initialize();
     
 }).catch(err => {
-    console.error('❌ Erro ao conectar no MongoDB:', err);
+    console.error('❌ Erro Mongo:', err);
 });
