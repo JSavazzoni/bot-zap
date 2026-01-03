@@ -84,42 +84,22 @@ mongoose.connect(MONGO_URI).then(() => {
         qrCodeImage = null; // Limpa memória
     });
 
-    // ... (Mantenha o início do código igual: Imports, Mongo, Express) ...
-
-// BLOCO DA LÓGICA DO WHATSAPP (Substitua a parte do client.on 'message_create')
-    
     client.on('message_create', async (msg) => {
-        // Verifica tudo rápido
+        // Verifica tudo em uma linha só para ser rápido
         if (!msg.fromMe || msg.to !== GRUPO_PERMITIDO || !msg.hasMedia || msg.type !== 'image') return;
 
-        // 1. REAÇÃO IMEDIATA (O Truque de Velocidade)
-        // Assim que ele ver a foto, ele coloca um reloginho na mensagem.
-        // O usuário sabe na hora que o bot funcionou.
-        await msg.react('⏳');
-
         try {
-            // 2. Baixa a mídia (A parte mais demorada)
             const media = await msg.downloadMedia();
-            
             if(media) {
-                // 3. Envia a figurinha
-                await msg.reply(media, null, { 
-                    sendMediaAsSticker: true, 
-                    stickerName: ".", // Nome curto processa mais rápido
-                    stickerAuthor: "."
-                });
-
-                // 4. Troca o relógio por um Check verde quando acabar
-                await msg.react('✅'); 
-                console.log('Sticker criado.');
+                // Envia sem firulas de log excessivo
+                await msg.reply(media, null, { sendMediaAsSticker: true, stickerName: "Bot", stickerAuthor: "Júlio" });
+                console.log('sticker ok'); // Log mínimo
             }
         } catch (error) {
-            console.error('Erro:', error.message);
-            await msg.react('❌'); // Avisa se der erro
+            console.error('Err:', error.message); // Log só da mensagem de erro
         }
     });
 
     client.initialize();
-
     
 }).catch(err => console.error('Erro Mongo:', err));
