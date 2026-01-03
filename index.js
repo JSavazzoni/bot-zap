@@ -7,19 +7,41 @@ const NodeCache = require('node-cache');
 const QRCode = require('qrcode');
 
 // ===========================================================
+// 🚨 SISTEMA ANTI-CRASH (O AIRBAG)
+// ===========================================================
+// Isso impede que o erro de criptografia derrube o site
+process.on('uncaughtException', async (err) => {
+    console.error('🔥 Erro Crítico Capturado:', err.message);
+    if (err.message.includes('Unsupported state') || err.message.includes('authenticate data')) {
+        console.log('☢️ SESSÃO CORROMPIDA DETECTADA! RESETANDO BANCO...');
+        try {
+            if (mongoose.connection.readyState === 1) {
+                await mongoose.connection.db.dropCollection('baileyssessions');
+                console.log('✅ Banco limpo. O Bot vai reiniciar limpo em 5s.');
+            }
+        } catch (e) { console.log('Erro ao limpar:', e); }
+    }
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.error('⚠️ Rejeição não tratada:', reason);
+});
+
+// ===========================================================
 // ⚙️ CONFIGURAÇÕES
 // ===========================================================
 const MONGO_URI = 'mongodb+srv://admin_julio:IS0DKctykYcCdx3Q@bot-zap.8dxhxws.mongodb.net/?appName=bot-zap';
-// Para funcionar para TODO MUNDO (inclusive você), deixe o filtro de grupo comentado ou configure certo.
 const GRUPO_PERMITIDO = '120363406055326989@g.us'; 
 
 // ===========================================================
-// 💾 SISTEMA DE BANCO (BufferJSON - Estável)
+// 💾 SISTEMA DE BANCO DE DADOS
 // ===========================================================
 const SessionSchema = new mongoose.Schema({ _id: String, data: String });
 const Session = mongoose.model('BaileysSession', SessionSchema);
 
-mongoose.connect(MONGO_URI).catch(err => console.error('❌ Erro Mongo:', err));
+mongoose.connect(MONGO_URI)
+    .then(() => console.log('🍃 MongoDB Conectado.'))
+    .catch(err => console.error('❌ Erro Fatal Mongo:', err));
 
 const useMongoDBAuthState = async () => {
     const writeData = async (data, id) => {
@@ -68,7 +90,7 @@ const useMongoDBAuthState = async () => {
 };
 
 // ===========================================================
-// 🌐 SITE VISUAL (Sem Logs)
+// 🌐 SITE VISUAL
 // ===========================================================
 const app = express();
 const port = process.env.PORT || 3000;
@@ -85,7 +107,7 @@ app.get('/', (req, res) => {
     .box{background:#222;padding:2rem;border-radius:10px;text-align:center}
     #qrcode{background:#fff;padding:10px;margin:20px auto;border-radius:8px;width:fit-content;display:none}
     </style></head><body>
-    <div class="box"><h2>🤖 Bot Sticker</h2><div id="qrcode"></div>
+    <div class="box"><h2>🤖 Bot Blindado</h2><div id="qrcode"></div>
     <p>Status: <span style="color:${isConnected?'#4ade80':'#fbbf24'}">${isConnected?'ONLINE 🟢':'Aguardando...'}</span></p>
     <p style="font-size:12px;opacity:0.6">${statusBot}</p></div>
     <script>
@@ -94,10 +116,10 @@ app.get('/', (req, res) => {
     </script></body></html>`;
     res.send(html);
 });
-app.listen(port); // Log removido para limpar terminal
+app.listen(port);
 
 // ===========================================================
-// 🧠 LÓGICA DO ROBÔ (Silenciosa e Leve)
+// 🧠 LÓGICA DO ROBÔ
 // ===========================================================
 const msgRetryCounterCache = new NodeCache();
 
@@ -110,13 +132,13 @@ const startBot = async () => {
         version,
         auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })) },
         printQRInTerminal: false,
-        logger: pino({ level: 'fatal' }), // SILÊNCIO TOTAL
+        logger: pino({ level: 'fatal' }),
         
-        // MUDANÇA IMPORTANTE: Identidade Única para não derrubar o celular
-        browser: ["Bot Sticker", "Safari", "1.0"], 
+        // MUDAMOS PARA UBUNTU PARA MAIOR ESTABILIDADE
+        browser: ["Ubuntu", "Chrome", "20.0.04"],
         
-        syncFullHistory: false, // Não baixa histórico
-        markOnlineOnConnect: false, // Não força ficar online (evita conflito)
+        syncFullHistory: false,
+        markOnlineOnConnect: false,
         generateHighQualityLinkPreview: false,
         
         connectTimeoutMs: 60000, 
@@ -136,21 +158,24 @@ const startBot = async () => {
 
         if (connection === 'close') {
             const reason = (lastDisconnect?.error)?.output?.statusCode;
-            // Só reconecta se não for logout
             const shouldReconnect = reason !== DisconnectReason.loggedOut;
             
-            // Log mínimo de erro
-            if (!shouldReconnect) console.log('❌ Sessão encerrada.');
+            console.log(`❌ Caiu. Código: ${reason}`);
 
-            if (reason === 401 || reason === 403) {
+            // === AQUI ESTÁ A CORREÇÃO DO 440 E 401 ===
+            // Se for Logout (401), Ban (403) ou Substituído (440) -> LIMPA TUDO
+            if (reason === 401 || reason === 403 || reason === 440) {
+                console.log('☢️ Sessão inválida ou substituída. Limpando banco...');
                 await mongoose.connection.db.dropCollection('baileyssessions').catch(()=>{});
             }
 
             qrRaw = null; isConnected = false; statusBot = `Reconectando...`;
-            if (shouldReconnect) setTimeout(startBot, 5000);
-
+            
+            if (shouldReconnect) {
+                setTimeout(startBot, 5000);
+            }
         } else if (connection === 'open') {
-            console.log('✅ Bot Online e Pronto.');
+            console.log('✅ Bot Conectado!');
             qrRaw = null; isConnected = true; statusBot = 'Sistema Online';
         }
     });
@@ -163,32 +188,23 @@ const startBot = async () => {
 
         const remoteJid = msg.key.remoteJid;
         
-        // Verifica grupo (se ativado)
-        if (GRUPO_PERMITIDO && remoteJid !== GRUPO_PERMITIDO) return;
+        // Se quiser responder apenas no grupo específico, descomente a linha abaixo:
+        // if (remoteJid !== GRUPO_PERMITIDO) return;
 
-        // Verifica Imagem
         const isImage = msg.message.imageMessage || 
                         msg.message.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ||
                         msg.message.viewOnceMessageV2?.message?.imageMessage;
         
         if (isImage) {
             try {
-                // Reação rápida
-                await sock.sendMessage(remoteJid, { react: { text: "⏳", key: msg.key } });
-
+                // await sock.sendMessage(remoteJid, { react: { text: "⏳", key: msg.key } }); // Comentado pra evitar conflito
                 const imageKey = msg.message.imageMessage ? msg : (msg.message.viewOnceMessageV2 ? msg.message.viewOnceMessageV2 : msg);
                 const buffer = await downloadMediaMessage(imageKey, 'buffer', {});
-                const sticker = new Sticker(buffer, { pack: '.', author: '.', type: StickerTypes.FULL, quality: 40 });
-
+                const sticker = new Sticker(buffer, { pack: '.', author: '.', type: StickerTypes.FULL, quality: 50 });
                 await sock.sendMessage(remoteJid, await sticker.toMessage(), { quoted: msg });
-                await sock.sendMessage(remoteJid, { react: { text: "✅", key: msg.key } });
-                
-                // Único log permitido
                 console.log('✅ Sticker enviado.');
-                
             } catch (e) {
-                // Erro silencioso (não polui o log)
-                await sock.sendMessage(remoteJid, { react: { text: "❌", key: msg.key } });
+                console.log('Erro ao enviar (Silencioso)');
             }
         }
     });
