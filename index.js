@@ -13,10 +13,16 @@ const MONGO_URI = 'mongodb+srv://admin_julio:IS0DKctykYcCdx3Q@bot-zap.8dxhxws.mo
 const GRUPO_PERMITIDO = '120363406055326989@g.us'; 
 
 // ===========================================================
-// 💾 SISTEMA DE BANCO DE DADOS (CACHEADO & OTIMIZADO)
+// 💾 SISTEMA DE BANCO (CONEXÃO ÚNICA E SEGURA)
 // ===========================================================
 const SessionSchema = new mongoose.Schema({ _id: String, data: Object });
 const Session = mongoose.model('BaileysSession', SessionSchema);
+
+// Conecta ao Banco APENAS UMA VEZ no início de tudo
+console.log('🍃 Iniciando conexão com MongoDB...');
+mongoose.connect(MONGO_URI)
+    .then(() => console.log('🍃 MongoDB Conectado e pronto.'))
+    .catch(err => console.error('❌ Erro Fatal Mongo:', err));
 
 const useMongoDBAuthState = async () => {
     const writeData = async (data, id) => {
@@ -88,14 +94,16 @@ app.get('/', (req, res) => {
 app.listen(port, () => console.log(`🌍 Site na porta ${port}`));
 
 // ===========================================================
-// 🧠 LÓGICA DO ROBÔ (ANTI-515)
+// 🧠 LÓGICA DO ROBÔ (ANTI-LOOP)
 // ===========================================================
 const msgRetryCounterCache = new NodeCache();
 
 const startBot = async () => {
-    console.log('🍃 Conectando Mongo...');
-    try { await mongoose.connect(MONGO_URI); console.log('🍃 Mongo OK.'); } 
-    catch (err) { console.error('❌ Erro Mongo:', err); return; }
+    // Verifica se o Mongo já conectou antes de prosseguir
+    if (mongoose.connection.readyState !== 1) {
+        console.log('⏳ Aguardando Banco de Dados...');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
 
     const { state, saveCreds } = await useMongoDBAuthState();
 
@@ -106,20 +114,16 @@ const startBot = async () => {
         },
         printQRInTerminal: false,
         logger: pino({ level: 'fatal' }),
+        browser: ["Bot Sticker", "Chrome", "1.0.0"],
         
-        // Configurações de Navegador Padrão (Mais aceito pelo Zap)
-        browser: ["Bot Sticker", "Chrome", "3.0"], 
-        
-        // CRUCIAL PARA RENDER FREE:
-        syncFullHistory: false, 
+        // --- OTIMIZAÇÕES ---
+        syncFullHistory: false, // CRUCIAL
         markOnlineOnConnect: false,
-        generateHighQualityLinkPreview: false,
         
-        // Configurações de Rede
         connectTimeoutMs: 60000, 
         defaultQueryTimeoutMs: 1000000,
-        keepAliveIntervalMs: 10000,
-        retryRequestDelayMs: 2000, 
+        keepAliveIntervalMs: 30000, 
+        retryRequestDelayMs: 5000, // Mais paciência nas tentativas
         
         msgRetryCounterCache, 
         getMessage: async () => { return { conversation: 'Oie' }; }
@@ -129,9 +133,9 @@ const startBot = async () => {
         const { connection, lastDisconnect, qr } = update;
         
         if (qr) {
-            console.log('⚡ QR Code NOVO (Vá para o site!)');
+            console.log('⚡ QR Code NOVO. Vá ao site!');
             qrRaw = qr;
-            statusBot = 'Escaneie o QR agora';
+            statusBot = 'Escaneie o QR Code';
             isConnected = false;
         }
 
@@ -139,13 +143,12 @@ const startBot = async () => {
             const reason = (lastDisconnect?.error)?.output?.statusCode;
             const shouldReconnect = reason !== DisconnectReason.loggedOut;
             
-            console.log(`❌ Caiu (Razão: ${reason}). Reconectar? ${shouldReconnect}`);
+            console.log(`❌ Conexão fechada. Razão: ${reason || 'Desconhecida/Rede'}`);
 
-            // === A CORREÇÃO DE OURO AQUI ===
-            // Só apagamos o banco se for 401 (Logout) ou 403 (Ban)
-            // Erros 515, 500, undefined ou rede -> NUNCA APAGUE O BANCO
+            // Apenas erro de Logout (401) exige limpar o banco.
+            // Erro 515 ou undefined NÃO limpa banco, apenas reconecta.
             if (reason === 401 || reason === 403) {
-                console.log('🚫 Sessão inválida (Logout). Limpando banco...');
+                console.log('🚫 Logout detectado. Limpando banco...');
                 await mongoose.connection.db.dropCollection('baileyssessions').catch(()=>{});
                 sock.logout();
             }
@@ -154,13 +157,16 @@ const startBot = async () => {
             isConnected = false;
             
             if (shouldReconnect) {
-                statusBot = `Reconectando (Erro ${reason})...`;
-                // Se for erro 515, tenta mais rápido. Se for outro, espera um pouco.
-                const delay = reason === 515 ? 2000 : 5000;
+                statusBot = `Reconectando... (${reason})`;
+                
+                // Estratégia de "Delay Inteligente"
+                // Se for erro undefined ou 515, esperamos 5 segundos para a rede acalmar
+                const delay = (reason === 515 || !reason) ? 5000 : 3000;
+                console.log(`⏳ Tentando de novo em ${delay/1000} segundos...`);
                 setTimeout(startBot, delay);
             }
         } else if (connection === 'open') {
-            console.log('✅ CONECTADO! Estável.');
+            console.log('✅ CONECTADO COM SUCESSO!');
             qrRaw = null;
             isConnected = true;
             statusBot = 'Sistema Online';
@@ -186,7 +192,6 @@ const startBot = async () => {
             try {
                 const imageKey = msg.message.imageMessage ? msg : (msg.message.viewOnceMessageV2 ? msg.message.viewOnceMessageV2 : msg);
                 const buffer = await downloadMediaMessage(imageKey, 'buffer', {});
-                // Qualidade ajustada para 40 (equilíbrio ideal)
                 const sticker = new Sticker(buffer, { pack: '.', author: '.', type: StickerTypes.FULL, quality: 40 });
 
                 await sock.sendMessage(remoteJid, await sticker.toMessage(), { quoted: msg });
