@@ -15,6 +15,7 @@
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "express": "^5.2.1",
     "mongoose": "^9.1.1",
+    "node-cache": "^5.1.2",
     "pino": "^10.1.0",
     "qrcode": "^1.5.4",
     "wa-sticker-formatter": "^4.4.4"
