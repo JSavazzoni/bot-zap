@@ -13,7 +13,7 @@ const MONGO_URI = 'mongodb+srv://admin_julio:IS0DKctykYcCdx3Q@bot-zap.8dxhxws.mo
 const GRUPO_PERMITIDO = '120363406055326989@g.us'; 
 
 // ===========================================================
-// 💾 SISTEMA DE BANCO DE DADOS (CACHEADO)
+// 💾 SISTEMA DE BANCO DE DADOS (CACHEADO & OTIMIZADO)
 // ===========================================================
 const SessionSchema = new mongoose.Schema({ _id: String, data: Object });
 const Session = mongoose.model('BaileysSession', SessionSchema);
@@ -88,7 +88,7 @@ app.get('/', (req, res) => {
 app.listen(port, () => console.log(`🌍 Site na porta ${port}`));
 
 // ===========================================================
-// 🧠 LÓGICA DO ROBÔ (SAFE MODE)
+// 🧠 LÓGICA DO ROBÔ (ANTI-515)
 // ===========================================================
 const msgRetryCounterCache = new NodeCache();
 
@@ -100,7 +100,6 @@ const startBot = async () => {
     const { state, saveCreds } = await useMongoDBAuthState();
 
     const sock = makeWASocket({
-        // REMOVIDO: fetchLatestBaileysVersion (Usa a interna para estabilidade)
         auth: {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
@@ -108,17 +107,19 @@ const startBot = async () => {
         printQRInTerminal: false,
         logger: pino({ level: 'fatal' }),
         
-        // --- CONFIGURAÇÕES SAFE MODE ---
-        browser: ["Ubuntu", "Chrome", "20.0.04"], // Identidade Linux (Mais estável que Chrome Desktop)
-        syncFullHistory: false, // OBRIGATÓRIO: Não baixa conversas antigas
-        markOnlineOnConnect: false, // Não avisa que está online (Economiza dados)
+        // Configurações de Navegador Padrão (Mais aceito pelo Zap)
+        browser: ["Bot Sticker", "Chrome", "3.0"], 
+        
+        // CRUCIAL PARA RENDER FREE:
+        syncFullHistory: false, 
+        markOnlineOnConnect: false,
         generateHighQualityLinkPreview: false,
         
-        // Tolerância Extrema a Falhas
+        // Configurações de Rede
         connectTimeoutMs: 60000, 
         defaultQueryTimeoutMs: 1000000,
-        keepAliveIntervalMs: 30000, // Aumentado para reduzir ping-pong
-        retryRequestDelayMs: 5000, // Espera 5s antes de tentar de novo
+        keepAliveIntervalMs: 10000,
+        retryRequestDelayMs: 2000, 
         
         msgRetryCounterCache, 
         getMessage: async () => { return { conversation: 'Oie' }; }
@@ -128,7 +129,7 @@ const startBot = async () => {
         const { connection, lastDisconnect, qr } = update;
         
         if (qr) {
-            console.log('⚡ QR Code NOVO. Abra o site!');
+            console.log('⚡ QR Code NOVO (Vá para o site!)');
             qrRaw = qr;
             statusBot = 'Escaneie o QR agora';
             isConnected = false;
@@ -136,27 +137,30 @@ const startBot = async () => {
 
         if (connection === 'close') {
             const reason = (lastDisconnect?.error)?.output?.statusCode;
-            // Se undefined, é erro de rede/Render. Forçamos reconexão.
             const shouldReconnect = reason !== DisconnectReason.loggedOut;
             
-            console.log(`❌ Caiu (Razão: ${reason || 'Desconhecida'}).`);
+            console.log(`❌ Caiu (Razão: ${reason}). Reconectar? ${shouldReconnect}`);
 
+            // === A CORREÇÃO DE OURO AQUI ===
+            // Só apagamos o banco se for 401 (Logout) ou 403 (Ban)
+            // Erros 515, 500, undefined ou rede -> NUNCA APAGUE O BANCO
             if (reason === 401 || reason === 403) {
-                console.log('🚫 Sessão inválida. Limpando...');
+                console.log('🚫 Sessão inválida (Logout). Limpando banco...');
                 await mongoose.connection.db.dropCollection('baileyssessions').catch(()=>{});
                 sock.logout();
             }
 
             qrRaw = null;
             isConnected = false;
-            statusBot = 'Reconectando em 10s...';
             
             if (shouldReconnect) {
-                // ESPERA 10 SEGUNDOS (Backoff para o Render não bloquear)
-                setTimeout(startBot, 10000);
+                statusBot = `Reconectando (Erro ${reason})...`;
+                // Se for erro 515, tenta mais rápido. Se for outro, espera um pouco.
+                const delay = reason === 515 ? 2000 : 5000;
+                setTimeout(startBot, delay);
             }
         } else if (connection === 'open') {
-            console.log('✅ CONECTADO E ESTÁVEL!');
+            console.log('✅ CONECTADO! Estável.');
             qrRaw = null;
             isConnected = true;
             statusBot = 'Sistema Online';
@@ -177,19 +181,18 @@ const startBot = async () => {
                         msg.message.viewOnceMessageV2?.message?.imageMessage;
         
         if (isImage) {
-            // Reação silenciosa (sem log se falhar)
             try { await sock.sendMessage(remoteJid, { react: { text: "⏳", key: msg.key } }); } catch(e){}
 
             try {
                 const imageKey = msg.message.imageMessage ? msg : (msg.message.viewOnceMessageV2 ? msg.message.viewOnceMessageV2 : msg);
                 const buffer = await downloadMediaMessage(imageKey, 'buffer', {});
-                // Qualidade 40 para garantir que nunca falhe por memória
+                // Qualidade ajustada para 40 (equilíbrio ideal)
                 const sticker = new Sticker(buffer, { pack: '.', author: '.', type: StickerTypes.FULL, quality: 40 });
 
                 await sock.sendMessage(remoteJid, await sticker.toMessage(), { quoted: msg });
                 await sock.sendMessage(remoteJid, { react: { text: "✅", key: msg.key } });
             } catch (e) {
-                console.error('Erro ao fazer sticker:', e.message);
+                console.error('Erro:', e.message);
                 try { await sock.sendMessage(remoteJid, { react: { text: "❌", key: msg.key } }); } catch(e){}
             }
         }
