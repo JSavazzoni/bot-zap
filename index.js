@@ -1,11 +1,10 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, makeCacheableSignalKeyStore } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, makeCacheableSignalKeyStore, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const { Sticker, StickerTypes } = require('wa-sticker-formatter');
 const mongoose = require('mongoose');
 const express = require('express');
 const pino = require('pino');
 const NodeCache = require('node-cache');
 const QRCode = require('qrcode');
-const fs = require('fs');
 
 // ===========================================================
 // ⚙️ CONFIGURAÇÕES
@@ -14,27 +13,40 @@ const MONGO_URI = 'mongodb+srv://admin_julio:IS0DKctykYcCdx3Q@bot-zap.8dxhxws.mo
 const GRUPO_PERMITIDO = '120363406055326989@g.us'; 
 
 // ===========================================================
-// 💾 SISTEMA DE BANCO DE DADOS (CONEXÃO ÚNICA)
+// 💾 SISTEMA DE BANCO DE DADOS (COM CONVERSÃO DE BINÁRIO)
 // ===========================================================
 const SessionSchema = new mongoose.Schema({ _id: String, data: Object });
 const Session = mongoose.model('BaileysSession', SessionSchema);
 
-// Conecta e não desconecta mais
+// Conecta ao Banco
 mongoose.connect(MONGO_URI)
-    .then(() => console.log('🍃 MongoDB Conectado (Modo Persistente).'))
+    .then(() => console.log('🍃 MongoDB Conectado.'))
     .catch(err => console.error('❌ Erro Fatal Mongo:', err));
 
 const useMongoDBAuthState = async () => {
+    // Função auxiliar para converter Binary do Mongo para Buffer do Node
+    const fixBinary = (data) => {
+        if (!data) return null;
+        if (data._bsontype === 'Binary') return data.read();
+        if (data.buffer && data.type === 'Buffer') return Buffer.from(data.data);
+        return data;
+    };
+
     const writeData = async (data, id) => {
         try { await Session.findByIdAndUpdate(id, { _id: id, data }, { upsert: true }); } catch(err) {}
     };
+
     const readData = async (id) => {
-        try { const res = await Session.findById(id); return res ? res.data : null; } catch(err) { return null; }
+        try { 
+            const res = await Session.findById(id); 
+            // AQUI ESTAVA O ERRO: Agora convertemos antes de retornar
+            return res && res.data ? fixBinary(res.data) : null; 
+        } catch(err) { return null; }
     };
     
-    // Removemos o uso de arquivos temporários para evitar conflito no Render
-    // Se não tiver credenciais no banco, iniciamos um objeto vazio
-    const creds = await readData('creds') || (await useMultiFileAuthState('./temp_auth_void')).state.creds;
+    // Inicia sessão vazia se não existir
+    const { state: startState } = await useMultiFileAuthState('./temp_auth_void'); 
+    const creds = await readData('creds') || startState.creds;
 
     return {
         state: {
@@ -44,7 +56,7 @@ const useMongoDBAuthState = async () => {
                     const data = {};
                     await Promise.all(ids.map(async (id) => {
                         let value = await readData(`${type}-${id}`);
-                        if(type === 'app-state-sync-key' && value) { value = value.proto; }
+                        if(type === 'app-state-sync-key' && value) { value = value.proto; } // Fix para chaves
                         if(value) data[id] = value;
                     }));
                     return data;
@@ -83,7 +95,7 @@ app.get('/', (req, res) => {
     .box{background:#161b22;padding:2rem;border-radius:12px;border:1px solid #30363d;text-align:center;width:300px}
     #qrcode{background:#fff;padding:10px;margin:20px auto;border-radius:8px;width:fit-content;display:none}
     .st{font-weight:bold;padding:4px 8px;border-radius:4px}</style></head><body>
-    <div class="box"><h2>🤖 Bot Sticker Auto-Fix</h2><div id="qrcode"></div>
+    <div class="box"><h2>🤖 Bot Fix Binary</h2><div id="qrcode"></div>
     <p>Status: <span class="st" style="background:${isConnected?'#238636':'#9e6a03'}">${isConnected?'ONLINE':'Aguardando...'}</span></p>
     <p style="font-size:12px;color:#8b949e">${statusBot}</p></div>
     <script>
@@ -95,34 +107,39 @@ app.get('/', (req, res) => {
 app.listen(port, () => console.log(`🌍 Site na porta ${port}`));
 
 // ===========================================================
-// 🧠 LÓGICA DO ROBÔ (AUTO-REPAIR)
+// 🧠 LÓGICA DO ROBÔ (ANTI-CRASH)
 // ===========================================================
 const msgRetryCounterCache = new NodeCache();
-let failureCount = 0; // Contador de erros seguidos
+let failureCount = 0;
 
 const startBot = async () => {
     const { state, saveCreds } = await useMongoDBAuthState();
+    
+    // Tenta buscar versão, se falhar usa padrão
+    let version = [2, 3000, 1015901307];
+    try {
+        const v = await fetchLatestBaileysVersion();
+        version = v.version;
+    } catch(e) {}
 
     const sock = makeWASocket({
+        version,
         auth: {
             creds: state.creds,
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
         },
         printQRInTerminal: false,
         logger: pino({ level: 'fatal' }),
+        browser: ["Ubuntu", "Chrome", "20.0.04"],
         
-        // MUDANÇA DE IDENTIDADE PARA EVITAR TRAVAS
-        browser: ["Bot Sticker", "Firefox", "1.0.0"],
-        
-        // OTIMIZAÇÕES
+        // OTIMIZAÇÕES DE MEMÓRIA E REDE
         syncFullHistory: false, 
         markOnlineOnConnect: false,
+        generateHighQualityLinkPreview: false,
         
-        // REDE
         connectTimeoutMs: 60000, 
-        defaultQueryTimeoutMs: 0, // Sem timeout para queries
         keepAliveIntervalMs: 10000,
-        retryRequestDelayMs: 5000,
+        retryRequestDelayMs: 2000,
         
         msgRetryCounterCache, 
         getMessage: async () => { return { conversation: 'Oie' }; }
@@ -134,47 +151,32 @@ const startBot = async () => {
         if (qr) {
             console.log('⚡ QR Code NOVO. Reset efetuado.');
             qrRaw = qr;
-            statusBot = 'Sessão Resetada. Escaneie!';
+            statusBot = 'Escaneie o QR Code!';
             isConnected = false;
-            failureCount = 0; // Resetamos o contador de erro se pedir QR
+            failureCount = 0;
         }
 
         if (connection === 'close') {
             const reason = (lastDisconnect?.error)?.output?.statusCode;
-            const errorPayload = lastDisconnect?.error?.message || "Sem detalhes";
             const shouldReconnect = reason !== DisconnectReason.loggedOut;
             
-            console.log(`❌ Caiu. Código: ${reason} | Erro: ${errorPayload}`);
+            console.log(`❌ Caiu. Código: ${reason || 'Desconhecido'}`);
             
-            // AUMENTA O CONTADOR DE ERROS
             failureCount++;
-            console.log(`⚠️ Tentativa de recuperação ${failureCount}/3`);
 
-            // SE FALHAR 3 VEZES SEGUIDAS COM ERRO CRÍTICO (515 ou Undefined)
-            // Nós mesmos apagamos o banco para forçar um QR Code novo e limpo.
-            if (failureCount >= 3 && (reason === 515 || !reason)) {
-                console.log('☢️ MUITOS ERROS SEGUIDOS! DESTRUINDO SESSÃO CORROMPIDA...');
-                try {
-                    await mongoose.connection.db.dropCollection('baileyssessions');
-                    console.log('✅ Banco limpo. Gerando novo QR Code na próxima reinicialização...');
-                    sock.logout(); // Força logout
-                } catch(e) { console.log('Erro ao limpar banco:', e); }
-                failureCount = 0; // Reseta contador
-            }
-
-            // Se for logout explícito (401), limpa imediatamente
-            if (reason === 401 || reason === 403) {
-                console.log('🚫 Deslogado. Limpando...');
+            // Lógica de Auto-Limpeza
+            if (failureCount >= 3 || reason === 401 || reason === 403) {
+                console.log('☢️ Limpando sessão corrompida...');
                 await mongoose.connection.db.dropCollection('baileyssessions').catch(()=>{});
+                // NÃO usamos sock.logout() aqui pois causa crash se o socket já fechou
                 failureCount = 0;
             }
 
             qrRaw = null;
             isConnected = false;
-            statusBot = `Reconectando... (Erro ${reason})`;
+            statusBot = `Reconectando...`;
             
             if (shouldReconnect) {
-                // Espera 5 segundos para não sobrecarregar
                 setTimeout(startBot, 5000);
             }
         } else if (connection === 'open') {
@@ -182,7 +184,7 @@ const startBot = async () => {
             qrRaw = null;
             isConnected = true;
             statusBot = 'Sistema Online';
-            failureCount = 0; // Sucesso! Zera os erros.
+            failureCount = 0;
         }
     });
 
@@ -211,7 +213,6 @@ const startBot = async () => {
                 await sock.sendMessage(remoteJid, { react: { text: "✅", key: msg.key } });
             } catch (e) {
                 console.error('Erro:', e.message);
-                try { await sock.sendMessage(remoteJid, { react: { text: "❌", key: msg.key } }); } catch(e){}
             }
         }
     });
