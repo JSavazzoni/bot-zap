@@ -5,6 +5,7 @@ const express = require('express');
 const pino = require('pino');
 const NodeCache = require('node-cache');
 const QRCode = require('qrcode');
+const fs = require('fs');
 
 // ===========================================================
 // ⚙️ CONFIGURAÇÕES
@@ -13,15 +14,14 @@ const MONGO_URI = 'mongodb+srv://admin_julio:IS0DKctykYcCdx3Q@bot-zap.8dxhxws.mo
 const GRUPO_PERMITIDO = '120363406055326989@g.us'; 
 
 // ===========================================================
-// 💾 SISTEMA DE BANCO (CONEXÃO ÚNICA E SEGURA)
+// 💾 SISTEMA DE BANCO DE DADOS (CONEXÃO ÚNICA)
 // ===========================================================
 const SessionSchema = new mongoose.Schema({ _id: String, data: Object });
 const Session = mongoose.model('BaileysSession', SessionSchema);
 
-// Conecta ao Banco APENAS UMA VEZ no início de tudo
-console.log('🍃 Iniciando conexão com MongoDB...');
+// Conecta e não desconecta mais
 mongoose.connect(MONGO_URI)
-    .then(() => console.log('🍃 MongoDB Conectado e pronto.'))
+    .then(() => console.log('🍃 MongoDB Conectado (Modo Persistente).'))
     .catch(err => console.error('❌ Erro Fatal Mongo:', err));
 
 const useMongoDBAuthState = async () => {
@@ -32,8 +32,9 @@ const useMongoDBAuthState = async () => {
         try { const res = await Session.findById(id); return res ? res.data : null; } catch(err) { return null; }
     };
     
-    const { state: startState } = await useMultiFileAuthState('./temp_auth_init'); 
-    const creds = await readData('creds') || startState.creds;
+    // Removemos o uso de arquivos temporários para evitar conflito no Render
+    // Se não tiver credenciais no banco, iniciamos um objeto vazio
+    const creds = await readData('creds') || (await useMultiFileAuthState('./temp_auth_void')).state.creds;
 
     return {
         state: {
@@ -82,7 +83,7 @@ app.get('/', (req, res) => {
     .box{background:#161b22;padding:2rem;border-radius:12px;border:1px solid #30363d;text-align:center;width:300px}
     #qrcode{background:#fff;padding:10px;margin:20px auto;border-radius:8px;width:fit-content;display:none}
     .st{font-weight:bold;padding:4px 8px;border-radius:4px}</style></head><body>
-    <div class="box"><h2>🤖 Bot Sticker</h2><div id="qrcode"></div>
+    <div class="box"><h2>🤖 Bot Sticker Auto-Fix</h2><div id="qrcode"></div>
     <p>Status: <span class="st" style="background:${isConnected?'#238636':'#9e6a03'}">${isConnected?'ONLINE':'Aguardando...'}</span></p>
     <p style="font-size:12px;color:#8b949e">${statusBot}</p></div>
     <script>
@@ -94,17 +95,12 @@ app.get('/', (req, res) => {
 app.listen(port, () => console.log(`🌍 Site na porta ${port}`));
 
 // ===========================================================
-// 🧠 LÓGICA DO ROBÔ (ANTI-LOOP)
+// 🧠 LÓGICA DO ROBÔ (AUTO-REPAIR)
 // ===========================================================
 const msgRetryCounterCache = new NodeCache();
+let failureCount = 0; // Contador de erros seguidos
 
 const startBot = async () => {
-    // Verifica se o Mongo já conectou antes de prosseguir
-    if (mongoose.connection.readyState !== 1) {
-        console.log('⏳ Aguardando Banco de Dados...');
-        await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-
     const { state, saveCreds } = await useMongoDBAuthState();
 
     const sock = makeWASocket({
@@ -114,16 +110,19 @@ const startBot = async () => {
         },
         printQRInTerminal: false,
         logger: pino({ level: 'fatal' }),
-        browser: ["Bot Sticker", "Chrome", "1.0.0"],
         
-        // --- OTIMIZAÇÕES ---
-        syncFullHistory: false, // CRUCIAL
+        // MUDANÇA DE IDENTIDADE PARA EVITAR TRAVAS
+        browser: ["Bot Sticker", "Firefox", "1.0.0"],
+        
+        // OTIMIZAÇÕES
+        syncFullHistory: false, 
         markOnlineOnConnect: false,
         
+        // REDE
         connectTimeoutMs: 60000, 
-        defaultQueryTimeoutMs: 1000000,
-        keepAliveIntervalMs: 30000, 
-        retryRequestDelayMs: 5000, // Mais paciência nas tentativas
+        defaultQueryTimeoutMs: 0, // Sem timeout para queries
+        keepAliveIntervalMs: 10000,
+        retryRequestDelayMs: 5000,
         
         msgRetryCounterCache, 
         getMessage: async () => { return { conversation: 'Oie' }; }
@@ -133,43 +132,57 @@ const startBot = async () => {
         const { connection, lastDisconnect, qr } = update;
         
         if (qr) {
-            console.log('⚡ QR Code NOVO. Vá ao site!');
+            console.log('⚡ QR Code NOVO. Reset efetuado.');
             qrRaw = qr;
-            statusBot = 'Escaneie o QR Code';
+            statusBot = 'Sessão Resetada. Escaneie!';
             isConnected = false;
+            failureCount = 0; // Resetamos o contador de erro se pedir QR
         }
 
         if (connection === 'close') {
             const reason = (lastDisconnect?.error)?.output?.statusCode;
+            const errorPayload = lastDisconnect?.error?.message || "Sem detalhes";
             const shouldReconnect = reason !== DisconnectReason.loggedOut;
             
-            console.log(`❌ Conexão fechada. Razão: ${reason || 'Desconhecida/Rede'}`);
+            console.log(`❌ Caiu. Código: ${reason} | Erro: ${errorPayload}`);
+            
+            // AUMENTA O CONTADOR DE ERROS
+            failureCount++;
+            console.log(`⚠️ Tentativa de recuperação ${failureCount}/3`);
 
-            // Apenas erro de Logout (401) exige limpar o banco.
-            // Erro 515 ou undefined NÃO limpa banco, apenas reconecta.
+            // SE FALHAR 3 VEZES SEGUIDAS COM ERRO CRÍTICO (515 ou Undefined)
+            // Nós mesmos apagamos o banco para forçar um QR Code novo e limpo.
+            if (failureCount >= 3 && (reason === 515 || !reason)) {
+                console.log('☢️ MUITOS ERROS SEGUIDOS! DESTRUINDO SESSÃO CORROMPIDA...');
+                try {
+                    await mongoose.connection.db.dropCollection('baileyssessions');
+                    console.log('✅ Banco limpo. Gerando novo QR Code na próxima reinicialização...');
+                    sock.logout(); // Força logout
+                } catch(e) { console.log('Erro ao limpar banco:', e); }
+                failureCount = 0; // Reseta contador
+            }
+
+            // Se for logout explícito (401), limpa imediatamente
             if (reason === 401 || reason === 403) {
-                console.log('🚫 Logout detectado. Limpando banco...');
+                console.log('🚫 Deslogado. Limpando...');
                 await mongoose.connection.db.dropCollection('baileyssessions').catch(()=>{});
-                sock.logout();
+                failureCount = 0;
             }
 
             qrRaw = null;
             isConnected = false;
+            statusBot = `Reconectando... (Erro ${reason})`;
             
             if (shouldReconnect) {
-                statusBot = `Reconectando... (${reason})`;
-                
-                // Estratégia de "Delay Inteligente"
-                // Se for erro undefined ou 515, esperamos 5 segundos para a rede acalmar
-                const delay = (reason === 515 || !reason) ? 5000 : 3000;
-                console.log(`⏳ Tentando de novo em ${delay/1000} segundos...`);
-                setTimeout(startBot, delay);
+                // Espera 5 segundos para não sobrecarregar
+                setTimeout(startBot, 5000);
             }
         } else if (connection === 'open') {
-            console.log('✅ CONECTADO COM SUCESSO!');
+            console.log('✅ CONECTADO E ESTÁVEL!');
             qrRaw = null;
             isConnected = true;
             statusBot = 'Sistema Online';
+            failureCount = 0; // Sucesso! Zera os erros.
         }
     });
 
