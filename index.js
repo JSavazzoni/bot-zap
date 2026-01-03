@@ -96,8 +96,19 @@ mongoose.connect(MONGO_URI).then(() => {
             store: store,
             backupSyncIntervalMs: 300000
         }),
+        // SUBSTITUA A PARTE ANTIGA DO PUPPETEER POR ESTA:
         puppeteer: { 
-            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+            headless: true,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage', // <--- ESSENCIAL para o Render não travar
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process', 
+                '--disable-gpu'
+            ]
         }
     });
 
