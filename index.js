@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, BufferJSON } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, BufferJSON, downloadMediaMessage } = require('@whiskeysockets/baileys');
 const { Sticker, StickerTypes } = require('wa-sticker-formatter');
 const mongoose = require('mongoose');
 const express = require('express');
@@ -10,12 +10,12 @@ const QRCode = require('qrcode');
 // ⚙️ CONFIGURAÇÕES
 // ===========================================================
 const MONGO_URI = 'mongodb+srv://admin_julio:IS0DKctykYcCdx3Q@bot-zap.8dxhxws.mongodb.net/?appName=bot-zap';
+// SE ESTIVER TESTANDO NO PRIVADO, COMENTE A LINHA DO GRUPO ABAIXO PARA TESTAR
 const GRUPO_PERMITIDO = '120363406055326989@g.us'; 
 
 // ===========================================================
-// 💾 SISTEMA DE BANCO BLINDADO (USANDO BufferJSON)
+// 💾 SISTEMA DE BANCO (BufferJSON)
 // ===========================================================
-// Salvamos como String (Texto) para evitar corrupção de Binário
 const SessionSchema = new mongoose.Schema({ _id: String, data: String });
 const Session = mongoose.model('BaileysSession', SessionSchema);
 
@@ -26,29 +26,17 @@ mongoose.connect(MONGO_URI)
 const useMongoDBAuthState = async () => {
     const writeData = async (data, id) => {
         try {
-            // CONVERTE TUDO PARA TEXTO SEGURO ANTES DE SALVAR
             const json = JSON.stringify(data, BufferJSON.replacer);
             await Session.findByIdAndUpdate(id, { _id: id, data: json }, { upsert: true });
-        } catch(err) {
-            console.error('Erro ao salvar sessão:', err);
-        }
+        } catch(err) { console.error('Erro salvar:', err); }
     };
-
     const readData = async (id) => {
         try {
             const res = await Session.findById(id);
-            // RECONVERTE TEXTO PARA DADOS REAIS
-            if (res && res.data) {
-                return JSON.parse(res.data, BufferJSON.reviver);
-            }
+            if (res && res.data) return JSON.parse(res.data, BufferJSON.reviver);
             return null;
         } catch(err) { return null; }
     };
-
-    const removeData = async (id) => {
-        try { await Session.findByIdAndDelete(id); } catch(err) {}
-    };
-
     const { state: startState } = await useMultiFileAuthState('./temp_auth_void'); 
     const creds = await readData('creds') || startState.creds;
 
@@ -99,7 +87,7 @@ app.get('/', (req, res) => {
     .box{background:#161b22;padding:2rem;border-radius:12px;border:1px solid #30363d;text-align:center;width:300px}
     #qrcode{background:#fff;padding:10px;margin:20px auto;border-radius:8px;width:fit-content;display:none}
     .st{font-weight:bold;padding:4px 8px;border-radius:4px}</style></head><body>
-    <div class="box"><h2>🤖 Bot Estável</h2><div id="qrcode"></div>
+    <div class="box"><h2>🤖 Bot Diagnóstico</h2><div id="qrcode"></div>
     <p>Status: <span class="st" style="background:${isConnected?'#238636':'#9e6a03'}">${isConnected?'ONLINE':'Aguardando...'}</span></p>
     <p style="font-size:12px;color:#8b949e">${statusBot}</p></div>
     <script>
@@ -111,112 +99,93 @@ app.get('/', (req, res) => {
 app.listen(port, () => console.log(`🌍 Site na porta ${port}`));
 
 // ===========================================================
-// 🧠 LÓGICA DO ROBÔ (ANTI-LOOP)
+// 🧠 LÓGICA DO ROBÔ (COM LOGS DE DIAGNÓSTICO)
 // ===========================================================
 const msgRetryCounterCache = new NodeCache();
 
 const startBot = async () => {
     const { state, saveCreds } = await useMongoDBAuthState();
-    
-    // Tenta pegar versão, se der timeout usa fixa
     let version = [2, 3000, 1015901307];
-    try {
-        const v = await fetchLatestBaileysVersion();
-        version = v.version;
-    } catch(e) {}
+    try { const v = await fetchLatestBaileysVersion(); version = v.version; } catch(e) {}
 
     const sock = makeWASocket({
         version,
-        auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
-        },
+        auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })) },
         printQRInTerminal: false,
         logger: pino({ level: 'fatal' }),
         browser: ["Ubuntu", "Chrome", "20.0.04"],
-        
-        // CRUCIAL:
         syncFullHistory: false, 
         markOnlineOnConnect: false,
-        
-        // Aumentando timeouts para evitar erro 408
         connectTimeoutMs: 60000, 
-        defaultQueryTimeoutMs: 0,
-        keepAliveIntervalMs: 10000,
         retryRequestDelayMs: 5000,
-        
         msgRetryCounterCache, 
         getMessage: async () => { return { conversation: 'Oie' }; }
     });
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
-        
         if (qr) {
-            // Só avisa se o QR for diferente do anterior (evita spam no log)
-            if (qr !== qrRaw) {
-                console.log('⚡ QR Code NOVO GERADO.');
-                qrRaw = qr;
-                statusBot = 'Escaneie o QR Code!';
-                isConnected = false;
-            }
+            if (qr !== qrRaw) { console.log('⚡ QR Code NOVO.'); qrRaw = qr; statusBot = 'Escaneie o QR Code!'; isConnected = false; }
         }
-
         if (connection === 'close') {
             const reason = (lastDisconnect?.error)?.output?.statusCode;
-            const shouldReconnect = reason !== DisconnectReason.loggedOut;
-            
-            console.log(`❌ Conexão caiu. Código: ${reason}`);
-
-            // Se for erro 401 (Logout), limpa banco.
-            if (reason === 401 || reason === 403) {
-                console.log('🚫 Sessão inválida. Limpando banco...');
-                await mongoose.connection.db.dropCollection('baileyssessions').catch(()=>{});
-            }
-
-            // Erros 408, 515, Undefined -> Apenas reconecta
-            qrRaw = null;
-            isConnected = false;
-            statusBot = `Reconectando...`;
-            
-            if (shouldReconnect) {
-                // Delay de 5s para não sobrecarregar o Render
-                setTimeout(startBot, 5000);
-            }
+            console.log(`❌ Conexão caiu (${reason}). Reconectando...`);
+            if (reason === 401 || reason === 403) { await mongoose.connection.db.dropCollection('baileyssessions').catch(()=>{}); }
+            qrRaw = null; isConnected = false; statusBot = `Reconectando...`;
+            setTimeout(startBot, 5000);
         } else if (connection === 'open') {
-            console.log('✅ CONECTADO COM SUCESSO!');
-            qrRaw = null;
-            isConnected = true;
-            statusBot = 'Sistema Online';
+            console.log('✅ CONECTADO COM SUCESSO! AGUARDANDO MENSAGENS...');
+            qrRaw = null; isConnected = true; statusBot = 'Sistema Online';
         }
     });
 
     sock.ev.on('creds.update', saveCreds);
 
+    // --- AQUI ESTÁ A LÓGICA DE MENSAGEM ---
     sock.ev.on('messages.upsert', async ({ messages }) => {
         const msg = messages[0];
-        if (!msg.message || msg.key.fromMe) return;
+        if (!msg.message) return; // Se não tem mensagem, ignora
 
+        // DIAGNÓSTICO: Mostra no log quem mandou mensagem
         const remoteJid = msg.key.remoteJid;
-        if (remoteJid !== GRUPO_PERMITIDO) return;
+        const quemMandou = msg.pushName || "Desconhecido";
+        console.log(`📩 Nova mensagem de: ${quemMandou} (${remoteJid})`);
 
+        // 1. FILTRO DE GRUPO (Agora avisa se estiver errado)
+        if (remoteJid !== GRUPO_PERMITIDO) {
+            console.log(`⚠️ Ignorado: ID do Grupo diferente. Esperado: ${GRUPO_PERMITIDO} | Recebido: ${remoteJid}`);
+            return;
+        }
+
+        // 2. DETECTOR DE IMAGEM
         const isImage = msg.message.imageMessage || 
                         msg.message.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ||
                         msg.message.viewOnceMessageV2?.message?.imageMessage;
         
         if (isImage) {
+            console.log('🖼️ Imagem detectada! Criando figurinha...');
+            
+            // Reação
             try { await sock.sendMessage(remoteJid, { react: { text: "⏳", key: msg.key } }); } catch(e){}
 
             try {
+                // Baixa a imagem
                 const imageKey = msg.message.imageMessage ? msg : (msg.message.viewOnceMessageV2 ? msg.message.viewOnceMessageV2 : msg);
                 const buffer = await downloadMediaMessage(imageKey, 'buffer', {});
+                
+                // Cria figurinha
                 const sticker = new Sticker(buffer, { pack: '.', author: '.', type: StickerTypes.FULL, quality: 40 });
 
+                // Envia
                 await sock.sendMessage(remoteJid, await sticker.toMessage(), { quoted: msg });
                 await sock.sendMessage(remoteJid, { react: { text: "✅", key: msg.key } });
+                console.log('✅ Figurinha enviada!');
             } catch (e) {
-                console.error('Erro:', e.message);
+                console.error('❌ Erro ao criar figurinha:', e);
+                try { await sock.sendMessage(remoteJid, { react: { text: "❌", key: msg.key } }); } catch(e){}
             }
+        } else {
+            console.log('ℹ️ Mensagem recebida, mas não é imagem.');
         }
     });
 };
