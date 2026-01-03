@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, makeCacheableSignalKeyStore } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, downloadMediaMessage, makeCacheableSignalKeyStore, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const { Sticker, StickerTypes } = require('wa-sticker-formatter');
 const mongoose = require('mongoose');
 const express = require('express');
@@ -13,7 +13,7 @@ const MONGO_URI = 'mongodb+srv://admin_julio:IS0DKctykYcCdx3Q@bot-zap.8dxhxws.mo
 const GRUPO_PERMITIDO = '120363406055326989@g.us'; 
 
 // ===========================================================
-// 💾 SISTEMA DE BANCO DE DADOS (SIMPLIFICADO E ROBUSTO)
+// 💾 SISTEMA DE BANCO DE DADOS (SIMPLIFICADO)
 // ===========================================================
 const SessionSchema = new mongoose.Schema({ _id: String, data: Object });
 const Session = mongoose.model('BaileysSession', SessionSchema);
@@ -25,10 +25,7 @@ const useMongoDBAuthState = async () => {
     const readData = async (id) => {
         try { const res = await Session.findById(id); return res ? res.data : null; } catch(err) { return null; }
     };
-    const removeData = async (id) => {
-        try { await Session.findByIdAndDelete(id); } catch(err) {}
-    };
-
+    
     const { state: startState } = await useMultiFileAuthState('./temp_auth_init'); 
     const creds = await readData('creds') || startState.creds;
 
@@ -89,7 +86,7 @@ app.get('/', (req, res) => {
 app.listen(port, () => console.log(`🌍 Site na porta ${port}`));
 
 // ===========================================================
-// 🧠 LÓGICA DO ROBÔ (ANTI-CRASH)
+// 🧠 LÓGICA DO ROBÔ
 // ===========================================================
 const msgRetryCounterCache = new NodeCache();
 
@@ -98,23 +95,25 @@ const startBot = async () => {
     try { await mongoose.connect(MONGO_URI); console.log('🍃 Mongo OK.'); } 
     catch (err) { console.error('❌ Erro Mongo:', err); return; }
 
+    // 1. VOLTAMOS A BUSCAR A VERSÃO REAL (Isso corrige o Erro 405)
+    console.log('📡 Buscando versão do WhatsApp...');
+    const { version } = await fetchLatestBaileysVersion();
+    console.log(`📡 Versão encontrada: v${version.join('.')}`);
+
     const { state, saveCreds } = await useMongoDBAuthState();
 
     const sock = makeWASocket({
-        // 1. FIXA A VERSÃO (Evita timeout buscando versão)
-        version: [2, 3000, 1015901307], 
+        version, 
         auth: {
             creds: state.creds,
-            // 2. Cache de chaves para não ler disco toda hora
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
         },
         printQRInTerminal: false,
-        logger: pino({ level: 'fatal' }), // Log mínimo
+        logger: pino({ level: 'fatal' }),
         
-        // --- O SEGREDO DO SUCESSO ---
-        browser: ["Bot Sticker", "Chrome", "1.0.0"],
-        syncFullHistory: false, // <--- ISSO IMPEDE O CRASH DE MEMÓRIA!
-        generateHighQualityLinkPreview: false, // Economiza dados
+        // 2. CONFIGURAÇÕES OTIMIZADAS
+        browser: ["Bot Sticker", "Chrome", "10.0"],
+        syncFullHistory: false, // <--- O SALVADOR DA PÁTRIA (Evita crash de memória)
         
         connectTimeoutMs: 60000, 
         keepAliveIntervalMs: 10000,
@@ -134,14 +133,13 @@ const startBot = async () => {
 
         if (connection === 'close') {
             const reason = (lastDisconnect?.error)?.output?.statusCode;
-            // Se o erro for undefined, consideramos que é problema de rede e tentamos de novo
             const shouldReconnect = reason !== DisconnectReason.loggedOut;
             
-            console.log(`❌ Caiu. Razão: ${reason || 'Indefinida (Rede)'}. Reconectar? ${shouldReconnect}`);
+            console.log(`❌ Caiu. Razão: ${reason}. Reconectar? ${shouldReconnect}`);
 
-            // Se for logout ou problema de criptografia (428, 515), limpamos a sessão
-            if (reason === 401 || reason === 403 || reason === 428) {
-                console.log('🚫 Sessão corrompida. Resetando...');
+            // Se for 401 (Logout) ou 403 (Proibido), limpa tudo
+            if (reason === 401 || reason === 403) {
+                console.log('🚫 Sessão inválida. Limpando banco...');
                 await mongoose.connection.db.dropCollection('baileyssessions').catch(()=>{});
                 sock.logout();
             }
@@ -151,10 +149,11 @@ const startBot = async () => {
             statusBot = 'Reconectando...';
             
             if (shouldReconnect) {
-                setTimeout(startBot, 5000);
+                // Tenta reconectar imediatamente
+                startBot();
             }
         } else if (connection === 'open') {
-            console.log('✅ CONECTADO! Histórico ignorado para economizar RAM.');
+            console.log('✅ CONECTADO! Histórico antigo ignorado.');
             qrRaw = null;
             isConnected = true;
             statusBot = 'Online';
