@@ -6,9 +6,6 @@ const pino = require('pino');
 const NodeCache = require('node-cache');
 const QRCode = require('qrcode');
 
-// ===========================================================
-// 🚨 SISTEMA ANTI-CRASH (SEGURANÇA TOTAL)
-// ===========================================================
 process.on('uncaughtException', async (err) => {
     console.error('🔥 Erro Crítico:', err.message);
     if (err.message.includes('Unsupported state') || err.message.includes('authenticate data')) {
@@ -25,16 +22,8 @@ process.on('unhandledRejection', (reason) => {
     console.error('⚠️ Rejeição Silenciosa:', reason);
 });
 
-// ===========================================================
-// ⚙️ CONFIGURAÇÕES
-// ===========================================================
 const MONGO_URI = 'mongodb+srv://admin_julio:IS0DKctykYcCdx3Q@bot-zap.8dxhxws.mongodb.net/?appName=bot-zap';
-// Se quiser liberar para todos, deixe o GRUPO_PERMITIDO comentado ou vazio
 const GRUPO_PERMITIDO = '120363406055326989@g.us'; 
-
-// ===========================================================
-// 💾 SISTEMA DE BANCO (BufferJSON)
-// ===========================================================
 const SessionSchema = new mongoose.Schema({ _id: String, data: String });
 const Session = mongoose.model('BaileysSession', SessionSchema);
 
@@ -88,9 +77,6 @@ const useMongoDBAuthState = async () => {
     };
 };
 
-// ===========================================================
-// 🌐 SITE VISUAL
-// ===========================================================
 const app = express();
 const port = process.env.PORT || 3000;
 let qrRaw = null;
@@ -117,9 +103,6 @@ app.get('/', (req, res) => {
 });
 app.listen(port);
 
-// ===========================================================
-// 🧠 LÓGICA DO ROBÔ
-// ===========================================================
 const msgRetryCounterCache = new NodeCache();
 
 const startBot = async () => {
@@ -178,9 +161,6 @@ const startBot = async () => {
         if (!msg.message) return;
 
         const remoteJid = msg.key.remoteJid;
-        
-        // Se quiser bloquear grupos estranhos, descomente:
-        // if (GRUPO_PERMITIDO && remoteJid !== GRUPO_PERMITIDO) return;
 
         const isImage = msg.message.imageMessage || 
                         msg.message.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage ||
@@ -188,9 +168,6 @@ const startBot = async () => {
         
         if (isImage) {
             try {
-                // 1. REAÇÃO DE "CARREGANDO" (⏳)
-                // Coloquei num try/catch separado para que, se a reação falhar, 
-                // ele continue tentando fazer a figurinha mesmo assim.
                 try { 
                     await sock.sendMessage(remoteJid, { react: { text: "⏳", key: msg.key } }); 
                 } catch(e) {}
@@ -201,7 +178,6 @@ const startBot = async () => {
 
                 await sock.sendMessage(remoteJid, await sticker.toMessage(), { quoted: msg });
                 
-                // 2. REAÇÃO DE "SUCESSO" (✅)
                 try {
                     await sock.sendMessage(remoteJid, { react: { text: "✅", key: msg.key } });
                 } catch(e) {}
@@ -210,7 +186,6 @@ const startBot = async () => {
                 
             } catch (e) {
                 console.log('Erro ao processar imagem:', e.message);
-                // 3. REAÇÃO DE "ERRO" (❌)
                 try {
                     await sock.sendMessage(remoteJid, { react: { text: "❌", key: msg.key } });
                 } catch(e) {}
